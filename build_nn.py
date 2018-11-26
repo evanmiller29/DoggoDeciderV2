@@ -3,11 +3,10 @@ import pandas as pd
 import cv2
 import numpy as np
 from tqdm import tqdm
+from shutil import copyfile
 
 import keras
 from keras.applications.vgg19 import VGG19
-# from keras.applications.inception_v3 import InceptionV3
-from keras.applications import ResNet50
 
 from keras.models import Model
 from keras.layers import Dense, Dropout, Flatten
@@ -17,13 +16,27 @@ from keras.preprocessing.image import ImageDataGenerator
 from keras.applications import imagenet_utils
 
 from PIL import Image
-
-from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 
 data_path = "C:/Users/evanm/Documents/Data/DoggoDecider/all"
+image_path = os.path.join(data_path, 'train', 'train')
+
 labels = pd.read_csv(os.path.join(data_path, 'labels.csv'))
 labels['images'] = labels['id'].apply(lambda x: x + '.jpg')
+
+images_train, images_validation = train_test_split(labels['images'], test_size=0.2, random_state=1234)
+
+#############################################
+### Moving the files to train/validation ####
+#############################################
+
+for image_train in tqdm(images_train):
+
+    copyfile(os.path.join(image_path, image_train), os.path.join(image_path, 'train', image_train))
+
+for image_valid in tqdm(images_validation):
+
+    copyfile(os.path.join(image_path, image_valid), os.path.join(image_path, 'validation', image_valid))
 
 targets_series = labels['breed']
 one_hot = pd.get_dummies(targets_series, sparse = True)
