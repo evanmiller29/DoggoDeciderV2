@@ -72,7 +72,7 @@ num_valid = labels.loc[labels['train'] == False, 'images'].nunique()
 
 im_size = 224
 batch_size = 32
-nb_epoch = 50
+nb_epoch = 60
 
 base_model = VGG19(weights='imagenet', include_top=False, input_shape=(im_size, im_size, 3))
 
