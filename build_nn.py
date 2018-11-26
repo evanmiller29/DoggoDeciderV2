@@ -10,82 +10,75 @@ from keras.applications.vgg19 import VGG19
 
 from keras.models import Model
 from keras.layers import Dense, Dropout, Flatten
-
-from keras.preprocessing.image import img_to_array
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.preprocessing.image import ImageDataGenerator
-from keras.applications import imagenet_utils
+from keras.optimizers import rmsprop
 
-from PIL import Image
 from sklearn.model_selection import train_test_split
+
+##################################################
+## Setting the file paths up and read in labels ##
+##################################################
 
 data_path = "C:/Users/evanm/Documents/Data/DoggoDecider/all"
 image_path = os.path.join(data_path, 'train', 'train')
+train_data_dir = os.path.join(image_path, 'train')
+valid_data_dir = os.path.join(image_path, 'validation')
 
 labels = pd.read_csv(os.path.join(data_path, 'labels.csv'))
 labels['images'] = labels['id'].apply(lambda x: x + '.jpg')
-
-images_train, images_validation = train_test_split(labels['images'], test_size=0.2, random_state=1234)
-
-#############################################
-### Moving the files to train/validation ####
-#############################################
-
-for image_train in tqdm(images_train):
-
-    copyfile(os.path.join(image_path, image_train), os.path.join(image_path, 'train', image_train))
-
-for image_valid in tqdm(images_validation):
-
-    copyfile(os.path.join(image_path, image_valid), os.path.join(image_path, 'validation', image_valid))
 
 targets_series = labels['breed']
 one_hot = pd.get_dummies(targets_series, sparse = True)
 one_hot_labels = np.asarray(one_hot)
 
-X = []
-y = []
+num_class = one_hot_labels.shape[1]
+images_train, images_validation = train_test_split(labels['images'], test_size=0.2, random_state=1234)
 
-def prepare_image(image, target):
-    # if the image mode is not RGB, convert it
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+labels['train'] = labels['images'].isin(images_train)
 
-    # resize the input image and preprocess it
-    image = image.resize(target)
-    image = img_to_array(image)
-    # image = np.expand_dims(image, axis=0)
-    # image = imagenet_utils.preprocess_input(image)
+#############################################
+### Moving the files to train/validation ####
+#############################################
 
-    return image
+breeds = labels['breed'].unique()
 
-images = labels['images'].values
-labels = labels['breed'].values
+for breed in breeds:
 
-i = 0
+    breed_dir = os.path.join(train_data_dir, breed)
+    os.makedirs(breed_dir)
+
+    images = labels.loc[(labels['breed'] == breed) & (labels['train'] == True), 'images']
+
+    for image in tqdm(images):
+
+        copyfile(os.path.join(image_path, image), os.path.join(breed_dir, image))
+
+breeds = labels['breed'].unique()
+
+for breed in breeds:
+
+    breed_dir = os.path.join(valid_data_dir, breed)
+    os.makedirs(breed_dir)
+
+    images = labels.loc[(labels['breed'] == breed) & (labels['train'] == False), 'images']
+
+    for image in tqdm(images):
+
+        copyfile(os.path.join(image_path, image), os.path.join(breed_dir, image))
+
+num_train = labels.loc[labels['train'] == True, 'images'].nunique()
+num_valid = labels.loc[labels['train'] == False, 'images'].nunique()
+
 im_size = 224
-
-for image in tqdm(images):
-
-    img = Image.open(os.path.join(data_path, 'train', 'train', image))
-    img = prepare_image(img, target=(im_size, im_size))
-
-    label = one_hot_labels[i]
-
-    X.append(img)
-    y.append(label)
-
-    i += 1
-
-y_raw = np.array(y, np.uint8)
-X_raw = np.array(X, np.float32) / 255.
-
-print(y_raw.shape)
-print(X_raw.shape)
-num_class = y_raw.shape[1]
-
-X_train, X_test, y_train, y_test = train_test_split(X_raw, y_raw, test_size=0.3, random_state=1)
+batch_size = 32
+nb_epoch = 50
 
 base_model = VGG19(weights='imagenet', include_top=False, input_shape=(im_size, im_size, 3))
+
+early_stopping = EarlyStopping(monitor='val_loss', patience=3)
+save_best_model = ModelCheckpoint(filepath='model_.{epoch:02d}_{val_loss:.2f}.hdf5', verbose=1,
+        monitor='val_loss')
 
 # Add a new top layer
 x = base_model.output
@@ -95,36 +88,50 @@ predictions = Dense(num_class, activation='softmax')(x)
 # This is the model we will train
 model = Model(inputs=base_model.input, outputs=predictions)
 
+#############################################
+############# Image generators ##############
+#############################################
+
+train_datagen = ImageDataGenerator(rescale= 1./255)
+validation_datagen = ImageDataGenerator(rescale=1./255)
+
+train_generator = train_datagen.flow_from_directory(
+    train_data_dir,
+    target_size=(im_size, im_size),
+    shuffle=True,
+    batch_size=batch_size,
+    class_mode='categorical'
+    )
+
+validation_generator = validation_datagen.flow_from_directory(
+    valid_data_dir,
+    target_size=(im_size, im_size),
+    batch_size=batch_size,
+    shuffle=True,
+    class_mode='categorical'
+    )
+
 # First: train only the top layers (which were randomly initialized)
 for layer in base_model.layers:
     layer.trainable = False
 
+opt = rmsprop()
+
 model.compile(loss='categorical_crossentropy',
-              optimizer='adam',
-              metrics=['accuracy'])
+             optimizer = opt,
+             metrics = ['accuracy'])
 
 callbacks_list = [keras.callbacks.EarlyStopping(monitor='val_acc', patience=3, verbose=1)]
 model.summary()
 
-datagen = ImageDataGenerator(
-    featurewise_center=True,
-    featurewise_std_normalization=True,
-    rotation_range=20,
-    width_shift_range=0.2,
-    height_shift_range=0.2,
-    horizontal_flip=True)
+history = model.fit_generator(train_generator,
+                    steps_per_epoch=(num_train // batch_size),
+                    epochs=nb_epoch,
+                    validation_data=validation_generator,
+                    callbacks=[early_stopping, save_best_model],
+                    validation_steps=(num_valid// batch_size)
+                   )
 
-epochs = 50
-batch = 64
-
-datagen.fit(X_train)
-
-#### The above step is creating a memory error. Might want to change to a data_flow_from_directory call
-
-model.fit_generator(datagen.flow(X_train, y_train, batch_size=64),
-                    steps_per_epoch=len(X_train) / 64, epochs=epochs)
-
-# model.fit(X_train, Y_train, epochs=50, validation_data=(X_test, Y_test), verbose=0)
-model.save('doggo_decider.h5')
-
-del model  # deletes the existing model
+# Save model
+model.save_weights('full_model_weights.h5')
+model.save('model.h5')
